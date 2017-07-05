@@ -1,0 +1,350 @@
+
+## Set working directory
+```{r}
+setwd('.../Into to Data Science/hw1/')
+```
+
+## All packages installetions:
+##############
+```{r}install.packages("dplyr")
+install.packages("corrplot")
+install.packages("class")
+install.packages("rpart")
+install.packages("pROC")
+install.packages("DMwR")
+install.packages("e1071")
+install.packages("randomForest")
+install.packages("fpc")
+install.packages("cluster")
+
+library(dplyr)
+library(corrplot)
+library(class)
+library(rpart)
+library(pROC)
+library(DMwR)
+library(e1071)
+library(randomForest)
+library(cluster)
+library(fpc)
+library(caTools)
+```
+
+###########
+# CARVANA #
+###########
+
+
+# PREPARATION
+##############
+
+## Load the data
+
+```{r}
+data.c = read.csv('Carvana/CARVANA.csv', na.strings=c("","NA"))
+data.c <- data.c[,-1] # remove x column
+
+# Remove the NA rows, not significant amount of rows
+data.c <-  data.c[!(data.c$Trim %>% is.na() | data.c$Transmission %>% is.na()),]
+```
+
+## Take a sample of 30,000 rows.
+```{r}
+set.seed(0)
+data.c<- data.c[sample.int(dim(data.c)[1], size=30000, replace = F),]
+```
+
+
+##  Split the data into test (30%) and train (70%) sets with respect to the target variable
+
+```{r}
+train.index = sample.split(data.c$IsBadBuy, SplitRatio = 0.7)      
+train.c <-(subset(data.c, train.index == TRUE))
+test.c <- (subset(data.c, train.index == FALSE))
+```
+
+# FEATURE SELECTION AND CORRELATION
+
+## Convert all factorial features to numeric
+
+```{r}
+factor.columns <- train.c[,sapply(train.c, is.factor)]  %>% names
+train.c[, factor.columns] <- sapply(train.c[,factor.columns], as.numeric)
+test.c[, factor.columns] <- sapply(test.c[,factor.columns], as.numeric)
+data.c[,factor.columns] <-  sapply(data.c[,factor.columns], as.numeric)
+
+train.c$IsBadBuy <-  sapply(train.c$IsBadBuy, as.factor)
+test.c$IsBadBuy <-  sapply(test.c$IsBadBuy, as.factor)
+```
+## Display the correlation plot of the features
+```{r}
+# Normalize it first
+data.c[,-1] <- scale(data.c[,-1], center = T, scale = T)
+train.c[,-1] <- scale(train.c[,-1], center = T, scale = T)
+test.c[,-1] <- scale(test.c[,-1], center = T, scale = T)
+
+par(mfrow = c(1,1))
+
+corr_matrix = cor(data.c[,-1])
+
+corrplot(corr_matrix, method="color", tl.pos = "td", type="upper", tl.cex = 0.6)
+```
+
+##  Features that have a correlation of over 0.65
+```{r}
+High.corr.columns <- which(corr_matrix >0.65 & corr_matrix <1, arr.ind = TRUE) %>% row.names()
+cat("the correlated features are ", High.corr.columns)
+```
+
+# Save new data frame without the highly correlated features and name them with the suffix .noHighCor
+```{r}
+data.c.noHighCor <-  data.c[,!colnames(data.c) %in% High.corr.columns]
+train.c.noHighCor <-  train.c[,!colnames(train.c) %in% High.corr.columns]
+test.c.noHighCor <-  test.c[,!colnames(test.c) %in% High.corr.columns]
+```
+
+# KNN
+
+## With the new train and test data frames - predict the test.c outcomes using knn, with k=1.
+
+
+```{r}
+train.c.noHighCor.label <- train.c.noHighCor$IsBadBuy
+train.c.noHighCor.features <- train.c.noHighCor[,-1]
+
+test.c.noHighCor.features <-  test.c.noHighCor[,-1]
+test.c.noHighCor.label <- test.c.noHighCor$IsBadBuy
+
+# run KNN with k=1
+knn.model <- knn(train.c.noHighCor.features, test.c.noHighCor.features, train.c.noHighCor.label, k=1)
+
+
+get_accuracy <- function(preds, labels){
+    tbl <-  table(preds, labels)
+    acc <- sum(diag(tbl)) / sum(tbl)
+    return(acc)
+}
+```
+
+## Display the confusion matrix:
+```{r}
+table(knn.model, test.c.noHighCor.label)
+get_accuracy(knn.model, test.c.noHighCor.label)
+```
+
+## Using cross-validation train a knn model
+```{r}
+
+knn3.model <- knn.cv(train.c.noHighCor.features, train.c.noHighCor.label, k=3) 
+acc.k3 <- get_accuracy(knn3.model, train.c.noHighCor.label)
+
+knn5.model <- knn.cv(train.c.noHighCor.features, train.c.noHighCor.label, k=5) 
+acc.k5 <- get_accuracy(knn5.model, train.c.noHighCor.label)
+
+knn10.model <- knn.cv(train.c.noHighCor.features, train.c.noHighCor.label, k=10) 
+acc.k10 <- get_accuracy(knn10.model, train.c.noHighCor.label)
+
+which.max(list(acc.k3, acc.k5, acc.k10))
+# we can see the best model is with K=10
+```
+
+## Predict the test data's labels
+```{r}
+knn10.model <- knn(train.c.noHighCor.features, test.c.noHighCor.features, train.c.noHighCor.label, k=10, prob = TRUE)
+table(knn10.model, test.c.noHighCor.label)
+get_accuracy(knn10.model, test.c.noHighCor.label)
+```
+
+# ROC
+## Display the ROC of the model you trained
+```{r}
+ROC <- roc(test.c.noHighCor.label, 1-attr(knn10.model,"prob"))
+plot(ROC, col = "blue", main ="ROC curve for KNN model with k=10")
+```
+
+# PCA 
+## Use train.c to find its principal components 
+
+```{r}
+# our data is already centered and scaled
+pc.model <- prcomp(train.c[,-1]) 
+```
+
+## Plot the drop in the variance explained by the PC's
+```{r}
+pcs.var <-  pc.model$sdev^2
+names(pcs.var) <- 1:length(pcs.var)
+barplot(pcs.var, main="Variance explained as a function of PCs", xlab="PCs")
+```
+
+## Using the PC's you created above, create two new data frames named train.c.pca and test.c.pca in which the features are replaced by PCs
+
+```{r}
+train.c.pca <- pc.model$x
+pcs <- pc.model$rotation
+test.c.pca <- t(t(pcs) %*% t(test.c[,-1]) )
+```
+
+## Using only the first 3 PC's - fit a simple knn model (like the first one we did) with k=7
+```{r}
+train.c.label <-  train.c$IsBadBuy
+test.c.label <- test.c$IsBadBuy
+knn.pc.model <- knn(train = train.c.pca[,1:3], test = test.c.pca[,1:3], cl = train.c.label, k=7)
+```
+
+## Show the confusion matrix
+```{r}
+table( knn.pc.model, test.c.label)
+get_accuracy(preds = knn.pc.model, test.c.label)
+```
+
+
+############
+# DIABETES #
+############
+
+
+# PREPARATIONS
+##############
+
+## Load the data
+```{r}
+data.d <- read.csv('Diabetes/diabetes.csv', header =  TRUE)
+
+# Transform all 0 values in this feature to NA.
+data.d[data.d$SkinThickness==0, 'SkinThickness'] <- NA
+
+# Impute the missing values for the feature SkinThickness using the mean
+data.d[is.na(data.d$SkinThickness), 'SkinThickness'] <- mean(data.d$SkinThickness, na.rm = TRUE)
+```
+
+# LOF 
+
+## Plot the density of the LOF scores using all features
+```{r}
+data.d.label <- data.d$Outcome
+
+# Lets scale the data first
+data.d.scaled.features <- as.data.frame(scale(data.d[,!colnames(data.d) == 'Outcome'], center = T, scale = T))
+lof.model <- lofactor(data.d.scaled.features, k=5)
+plot(density(lof.model), main = "LOF density plot", xlab= "lof values")
+```
+
+## Based on the plot above - remove outliers above a certain LOF score threshold
+```{r}
+sum(lof.model < 1.5) / length(lof.model)
+# We remain with 95.9% of the data, after considering removing LOF > 1.3 that we observed in the previous plot
+data.d.scaled.features <- data.d.scaled.features[lof.model < 1.5,]
+data.d.label <- data.d.label[lof.model < 1.5]
+```
+
+# SVM 
+
+## Split the data into test (30%) and train (70%) sets with respect to the target variable
+```{r}
+set.seed(0)
+train.index = sample.split(data.d$Outcome, SplitRatio = 0.7)      
+train.d <-(subset(data.d, train.index == TRUE))
+test.d <- (subset(data.d, train.index == FALSE))
+
+train.d.features <- scale(train.d[,!colnames(train.d) == 'Outcome'], center = T, scale = T)
+test.d.features <- scale(test.d[,!colnames(test.d)== 'Outcome'], center = T, scale = T)
+
+train.d$Outcome <- as.factor(train.d$Outcome)
+test.d$Outcome <- as.factor(test.d$Outcome)
+```
+    
+## Create an SVM model with as many features as possible
+```{r} 
+model.features <- c("Pregnancies", "Glucose" , "BloodPressure" ,"Insulin"  , "BMI"  ,"DiabetesPedigreeFunction")
+
+svm.model <- svm(x = train.d.features[,model.features],y = train.d$Outcome, cost=1, gamma=1, type = 'C-classification', kernel ="radial")
+res <- predict(svm.model, test.d.features[,model.features])
+```
+
+
+## Compute the error rate
+```{r}
+1-get_accuracy(res, test.d$Outcome)
+# Error is 29.1% on test set
+```
+
+## Tune the SVM model using no more than 5 different costs, 5 different gammas and 5 CV
+```{r}
+svm_tune <- tune(svm, train.x=train.d.features[,model.features], train.y=train.d$Outcome, 
+                 kernel="radial", ranges=list(cost=10^(-2:2), gamma=c(.01,.1,.5,2, 10)))
+print(svm_tune)
+# Best parameters are: cost = 1, gamma = 0.01
+
+svm_tune$best.performance
+# We achieved 21.7% CV error rate which is less than 23% :)
+```
+
+## Display the best model found (its parameters) and use it to predict the test values
+```{r}
+svm_tune$best.parameters
+# The kernel we chose is radial basis
+svm.model2 <- svm(x = train.d.features[,model.features],y = train.d$Outcome, cost=svm_tune$best.parameters["cost"][[1]], gamma = svm_tune$best.parameters["gamma"][[1]])
+res2 <- predict(svm.model2, test.d.features[,model.features])
+
+## Show if it improved by computing the new error rate
+1-get_accuracy(res2, test.d$Outcome)
+
+```
+
+# RANDOM FOREST
+
+
+## Create a random forest model with as many features as possible (but choose with logic and looking at the data)
+
+```{r}
+# Lets take a look on the features coefficiens in simple logistic regression 
+lr.model <- glm(Outcome ~ ., data=train.d, family="binomial")
+lr.model$coefficients
+# we will choose all features with abs(betas) > threshold
+
+features.model <- names(which(abs(lr.model$coefficients) >0.01, TRUE))[-1]
+features.model
+
+rf.model <- randomForest(x= train.d.features[,features.model], y=train.d$Outcome, importance = TRUE, ntree = 2000)
+
+# Lets use the model to predict the test outcome
+resForest <- predict(rf.model, test.d.features)
+
+# Display the error rate
+1-get_accuracy(preds = resForest, labels = test.d$Outcome)
+# Random forest outperformed the tuned SVM model :)
+```
+
+## Feature importance
+```{r}
+feature.importance <- rf.model$importance
+fi <- as.data.frame(cbind(feature.importance[,-c(1,2,3)]))
+colnames(fi) <- "value"
+fi <- fi[with(fi, order(-value)), ]
+barplot(fi, beside = T, names.arg = feature.importance %>% row.names(), cex.names = 0.8)
+```
+
+###########
+# MOVIES #
+###########
+
+# KMEANS
+
+## Loading the data
+```{r}
+data.m <- read.csv('Movies/movies.csv', header =  TRUE)
+```
+
+## Run kmeans using 6 centers.
+```{r}
+data.m.scaled <- scale(data.m[,c("rating", "year", "votes", "length")], center = TRUE, scale = TRUE)
+data.m.scaled <-  data.m.scaled %>% as.data.frame()
+kmean.model <- kmeans(data.m.scaled, 6, nstart =  20)
+
+# plot the clusters:
+plot(data.m.scaled[c('rating','year')],col=kmean.model$cluster,main='Kmeans using 6 centroids')
+points(kmean.model$centers[,c('rating','year')],col=1:6,pch=20,cex=3)
+
+#It looks like the data can be represented by fewer centroids since there are overlapping areas when using 6 centroids
+```
